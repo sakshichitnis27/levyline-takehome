@@ -55,7 +55,7 @@ export function AppSidebar() {
                     <SidebarMenuButton
                       asChild
                       tooltip={item.title}
-                      isActive={pathname.startsWith(item.href)}
+                      isActive={item.exact ? pathname === item.href : pathname.startsWith(item.href)}
                     >
                       <Link href={item.href}>
                         <item.icon />

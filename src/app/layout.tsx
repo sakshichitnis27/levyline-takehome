@@ -19,7 +19,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <TooltipProvider>
           <SidebarProvider>
             <AppSidebar />
-            <SidebarInset>{children}</SidebarInset>
+            <SidebarInset className="min-w-0">{children}</SidebarInset>
           </SidebarProvider>
           <Toaster />
         </TooltipProvider>
