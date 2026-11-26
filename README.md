@@ -195,3 +195,84 @@ After we've looked at it, we'll book a 30-minute call where you show us your app
 - **Communication**: your README makes the trade-offs clear.
 
 Everything in this repo is fictional. No real people, managing agents or addresses.
+
+---
+
+# Submission notes
+
+## Running it
+
+```bash
+npm install
+cp .env.example .env.local      # set DATABASE_URL, e.g. postgres://localhost/levyline
+createdb levyline
+npm run dev                     # applies migrations, then starts Next.js and the automation worker
+npm test                        # 31 tests; uses its own database, levyline_test, rebuilt each run
+```
+
+- **Schema**: plain SQL in `migrations/`, applied in order by `scripts/migrate.mjs` (`npm run db:migrate`; `npm run db:reset` drops and rebuilds). `npm run dev` runs it first, so a fresh clone works.
+- **Try it fast**: Import → “Use a sample: owners-and-receivables.csv” → decide the one suggested merge → Import. Then import the update file the same way.
+- **Email, offline**: leave `RESEND_API_KEY` empty. Every sent email in an owner's conversation has a **Simulate a reply** button (and **×2** to deliver the webhook twice). `npm run email:simulate-reply -- --to reply+<token>@reply.levyline.local` also works; the token is on each sent message (`messages.reply_token`).
+- **Email, for real**: set `RESEND_API_KEY`, `EMAIL_REDIRECT_TO`, `EMAIL_RECEIVING_DOMAIN` and `RESEND_WEBHOOK_SECRET` as in *Email set-up* above, and point the Resend `email.received` webhook at `/api/webhooks/resend` through ngrok.
+
+### Controlling the clock
+
+Everything time-based (contact hours, one email a day, Waits, instalment dates, missed payments) reads one app clock (`src/lib/clock.ts`), never `new Date()`.
+
+- **In the app**: *Settings* → set “now”, skip ahead (+1 hour … +1 week), set how many real minutes a day lasts, freeze, or go back to real time.
+- **In `.env.local`**: `LEVYLINE_NOW=2026-12-01T09:00:00Z` (start the clock there), `LEVYLINE_DAY_MINUTES=5` (a day lasts 5 real minutes; Waits and contact hours scale with it), `LEVYLINE_FREEZE=1`.
+
+The clock's anchor is stored in Postgres, so stopping `npm run dev` mid-Wait and starting again carries on rather than jumping back.
+
+## How the rules are kept
+
+| Rule | Where | How |
+|---|---|---|
+| 1 Never guess | `src/lib/import/normalize.ts` | `1.340,00`, `one thousand`, blank amounts and impossible dates (`31/09`) skip the row with a reason. Day/month order is a **file-level decision staff confirm** on the mapping step: we pre-select day-first only when the file proves it (`31/10/2026`), and say so. With no confirmed order, swappable dates are skipped. A demand that appears twice with different amounts (D-1049) skips both rows. |
+| 2 No silent merges | `plan.ts` step 5 | People are recognised by (name, email), or (name, unit) with no email. Same name with a different email or unit is a **suggestion**; the Import button stays disabled until staff decide each one. A shared email is never a reason to merge (Liam Gallagher / Úna Daly). |
+| 3 Idempotent | `owner_identities`, unique `(client, demand_ref)` | Re-importing the same file plans zero changes (tested). |
+| 3 Staff edits survive | `owners.imported`, `receivables.imported` | Each row keeps a snapshot of what the file last said. A field is only overwritten when the file's value changed since then. |
+| 4 Notes matter | `readNoteFlags()` | “DNC / solicitor acting” → do not contact; “disputed” → receivable disputed; “deceased” → owner flagged, never automated; “sold” → that owner isn't chased for that unit. All shown on the owner page. Imports only ever *add* these flags; clearing them is a staff decision. |
+| 5 Do not contact | `deliver()` in `messaging.ts` | Checked in the API, in the UI, and again at the moment of sending, whoever queued the email. Commitments can still be recorded. |
+| 6 Joint owners | Composer “also send to joint owners” | Each recipient gets their own message, thread and reply address, so each reply belongs to them. |
+| 7 Replies | `/api/webhooks/resend` | Every email's Reply-To is `reply+<token>@<receiving domain>`; the token maps to the message, owner and thread. Signature verified, deduplicated on Resend's email id. Unknown token → **Unmatched replies** page, where staff attach it. Owner pages refresh every 10 s. |
+| 8 Who's chased | `automatedEmailVerdict()` in `rules.ts` | Never DNC, deceased, no usable email, balance ≤ 0; only receivables that are due, undisputed, not in an active commitment and not on a sold unit. |
+| 9 Hours and one a day | `rules.ts`, `automated_email_days` | Mon–Sat 08:00–20:00 Europe/Dublin. One automated email per owner per Irish date, enforced by a primary key on `(owner, day)`, so two automations can't both win. |
+| 10 Reply pauses | `onOwnerReplied()` | Sets `automation_paused` until staff press Resume. |
+| 11–13 Commitments | `validateCommitment()` | One client, ≤ outstanding, 1–12 payments, future and increasing dates, first within 30 days, one active per client (also a partial unique index). The same function validates in the dialog as staff type. |
+| 14 | `chaseable()` | Committed receivables are skipped; others for the same owner can still be chased. |
+| 15 Missed | `breakMissedCommitments()` | Unpaid 3 days after its date → commitment broken (checked by the worker and on page load). |
+| 16 Confirmation | `createCommitment()` | Sends `commitment-confirmation` unless DNC or no usable email; the timeline says which. |
+
+### Automations
+
+- A Postgres-backed worker (`src/lib/automation/engine.ts`, started from `src/instrumentation.ts`) wakes every 3 s and moves each due owner on. All state (current step, wake time, steps done) is in the database, so a restart loses nothing. An advisory lock means only one worker runs at a time.
+- **Never twice per step**: `enrollment_steps` is unique per (enrollment, step), and the message id is the provider idempotency key. A failed send is retried with back-off (up to 5 attempts) on the *same* message; after that the owner shows **Failed** with a Retry button.
+- Owners run the **version** of the graph that was live when they joined; editing the draft doesn't move anyone mid-way.
+- Validation: one Start, an End, every step reachable, no dead ends, both Branch exits used, no loops, known placeholders only.
+- Anyone held back stays on the step with the reason on their page (and on the dashboard), and is re-checked automatically.
+
+## Decisions and interpretations
+
+- **Owner Email/Phone belong to Owner 1.** The export has one contact column; joint owners named in *Owner 2* get no email (so they're flagged).
+- **A unit's owners** are everyone named on any of its rows. Someone no longer listed (Cathal Lynch on RI-N04) is removed from that unit, which the preview warns about.
+- **Same name on a unit someone already owns** is treated as the same person on re-import (this is how Deirdre Dunne's new email arrives as an *update*). Within one file it's only a suggestion.
+- **Overpayments** (D-1112, paid 2000 on 1875) are imported as they are and count as credit; the preview flags them.
+- **€1,495.00** is read (dot decimal, like the rest of the file) and noted as tidied; **1.340,00** is not.
+- **Missing contact values never blank a field**: if MI-106 leaves the file, Declan Kennedy keeps the email it carried.
+- **Balance for rule 8** is per Client (the automation's client), since money owed to one Client can't pay another's.
+- **Deceased** owners aren't emailed by automations; staff can still write by hand (e.g. to the estate).
+- **“Has replied?”** means a reply since the owner joined that automation.
+- **Archived units** drop out of balances and chasing but keep their history.
+
+## What I'd do next
+
+- Unit tests for the canvas interactions, and an end-to-end test (Playwright) of import → message → reply → automation.
+- Per-client contact hours, sender name and editable templates in the database (templates are still files).
+- Staff sign-in so the timeline says who did what.
+- Pay online (Stripe test mode) to mark receivables paid without waiting for the next export.
+- In local mail mode a crash in the ~200 ms of a send could, in theory, resend once (Resend's idempotency key covers the real provider). I'd check `.mailbox/outbox` for the key before retrying.
+
+## Where AI helped, and where I stepped in
+
+Built with Claude Code (Opus 5.5). It drafted the schema, import planner, rule functions, worker and UI, and the tests. Testing in the browser caught bugs the unit tests hadn't: the svix version here doesn't return the payload from `verify()`; Postgres `jsonb` reorders keys, which made the canvas always say “unsaved”; and the update file exposed that a unit leaving the export would blank an owner's email. Each now has a fix and a test where it mattered.

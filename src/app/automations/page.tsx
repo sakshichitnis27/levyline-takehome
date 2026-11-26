@@ -1,32 +1,60 @@
+import Link from "next/link";
+import { connection } from "next/server";
 import { WorkflowIcon } from "lucide-react";
 
-import { AutomationCanvas } from "@/components/automation-canvas";
+import { NewAutomationButton } from "@/components/automations/new-automation-button";
 import { PageHeader } from "@/components/page-header";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { stepLabel } from "@/lib/automation/graph";
+import { listAutomations } from "@/lib/automation/store";
+import { formatDateTime } from "@/lib/time";
 
-export default function Page() {
+export default async function Page() {
+  await connection();
+  const automations = await listAutomations();
   return (
     <>
-      <PageHeader title="Automations" description="Design an email automation" />
-      <main className="relative flex-1">
-        <div className="absolute inset-0">
-          <AutomationCanvas />
-        </div>
-        {/* Delete this hint once the canvas has nodes. */}
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
-          <div className="max-w-sm rounded-2xl border bg-card/90 p-6 text-center shadow-sm backdrop-blur">
-            <div className="mx-auto flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-              <WorkflowIcon className="size-5" />
-            </div>
-            <h2 className="mt-4 text-lg font-semibold tracking-tight">
-              An empty canvas
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              React Flow is wired up. Add Start and End, a step library (Send
-              email, Wait, Branch), validation, saving, and a way to turn it
-              on for owners. See Part 3 in the README.
-            </p>
+      <PageHeader title="Automations" description="Reminder emails that run on their own" actions={<NewAutomationButton />} />
+      <main className="mx-auto w-full max-w-5xl p-6 md:p-10">
+        {automations.length === 0 ? (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <WorkflowIcon />
+              </EmptyMedia>
+              <EmptyTitle>No automations yet</EmptyTitle>
+              <EmptyDescription>Design how owners are chased on a canvas, then turn it on for the owners you choose.</EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <NewAutomationButton />
+            </EmptyContent>
+          </Empty>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2">
+            {automations.map((a) => (
+              <Link key={a.id} href={`/automations/${a.id}`}>
+                <Card className="h-full transition-colors hover:bg-muted/50">
+                  <CardHeader>
+                    <CardTitle className="flex items-center justify-between gap-2">
+                      {a.name}
+                      <Badge variant={a.status === "live" ? "default" : a.status === "paused" ? "outline" : "secondary"}>
+                        {a.status === "live" ? "On" : a.status === "paused" ? "Paused" : "Draft"}
+                      </Badge>
+                    </CardTitle>
+                    <CardDescription>
+                      {a.client_name ?? "No client chosen"} · {a.graph.nodes.filter((n) => n.type !== "start" && n.type !== "end").map((n) => stepLabel(n)).join(" → ") || "empty"}
+                    </CardDescription>
+                    <CardDescription>
+                      {Object.entries(a.counts ?? {}).map(([s, n]) => `${n} ${s}`).join(" · ") || "No owners yet"} · edited {formatDateTime(a.updated_at)}
+                    </CardDescription>
+                  </CardHeader>
+                </Card>
+              </Link>
+            ))}
           </div>
-        </div>
+        )}
       </main>
     </>
   );

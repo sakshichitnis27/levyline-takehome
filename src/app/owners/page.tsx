@@ -1,26 +1,38 @@
+import Link from "next/link";
+import { connection } from "next/server";
 import { UsersIcon } from "lucide-react";
 
+import { OwnersTable } from "@/components/owners/owners-table";
 import { PageHeader } from "@/components/page-header";
-import { TodoPlaceholder } from "@/components/todo-placeholder";
+import { Button } from "@/components/ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { listOwners } from "@/lib/owners";
 
-export default function Page() {
+export default async function Page() {
+  await connection();
+  const owners = await listOwners();
   return (
     <>
       <PageHeader title="Owners" description="Everyone who owes a service charge" />
-      <main className="flex flex-1 items-center justify-center p-6">
-        <TodoPlaceholder
-          icon={UsersIcon}
-          phase="Part 2"
-          title="Owners"
-          description="Part 2 in the README."
-          file="src/app/owners/page.tsx"
-          todo={[
-            "One row per owner: balance, status, developments, units, email, phone, last message",
-            "Search, and sort by balance or last message",
-            "Filter by status or missing contact details",
-            "Each row opens /owners/[ownerId]",
-          ]}
-        />
+      <main className="mx-auto w-full max-w-7xl p-6 md:p-10">
+        {owners.length === 0 ? (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <UsersIcon />
+              </EmptyMedia>
+              <EmptyTitle>No owners yet</EmptyTitle>
+              <EmptyDescription>Import an export from the accounts system to get started.</EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button asChild>
+                <Link href="/import">Import a file</Link>
+              </Button>
+            </EmptyContent>
+          </Empty>
+        ) : (
+          <OwnersTable owners={owners} />
+        )}
       </main>
     </>
   );
